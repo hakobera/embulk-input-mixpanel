@@ -17,19 +17,18 @@ module Embulk
         task = create_task(config)
         task["schema"] = config.param("columns", :array)
 
-        replace_special_prefix = config.param("replace_special_prefix", :string, nil)
-
         columns = []
         task["schema"].each do |c|
           index = c["index"]
           name = c["name"]
           type = c["type"].to_sym
+          format = c["format"]
 
-          if replace_special_prefix && name.start_with?(SPECIAL_PREFIX)
-            name = replace_special_prefix + name[SPECIAL_PREFIX.length..-1]
+          if task["replace_special_prefix"] && name.start_with?(SPECIAL_PREFIX)
+            name = task["replace_special_prefix"] + name[SPECIAL_PREFIX.length..-1]
           end
 
-          columns << Column.new(index, name, type)
+          columns << Column.new(index, name, type, format)
         end
 
         commit_report = yield(task, columns, 1)
@@ -57,7 +56,28 @@ module Embulk
         MixpanelInputPlugin::export(task, MixpanelInputPlugin::local_cache_file_path(task)) do |record|
           row = Array.new(schema.length)
           schema.each do |col|
-            row[col["index"]] = record[col["name"]]
+            val = record[col["name"]]
+            row[col["index"]] =
+              if val.nil?
+                nil
+              else
+                case col["type"].to_sym
+                when :boolean, :long, :double
+                  val
+                when :string
+                  val.to_s
+                when :timestamp
+                  if col["format"]
+                    Time.strptime(val, col["format"])
+                  elsif val.respond_to(:to_i)
+                    Time.at(val.to_i)
+                  else
+                    Time.parse(val)
+                  end
+                else
+                  raise "unknown type: #{col['type']}"
+                end
+              end
           end
           page_builder.add(row)
         end
@@ -75,8 +95,11 @@ module Embulk
           "mixpanel_api_secret" => config.param("mixpanel_api_secret", :string),
           "event" => config.param("event", :string),
           "from_date" => config.param("from_date", :string),
-          "to_date" => config.param("to_date", :string)
+          "to_date" => config.param("to_date", :string),
+          "replace_special_prefix" => config.param("replace_special_prefix", :string, nil)
         }
+        task["digest"] = Digest::SHA256.hexdigest(task.map{|key,val| "#{key}=#{val}"}.sort.join)
+        task
       end
       
       def self.sample_records(task)
@@ -92,8 +115,7 @@ module Embulk
 
       def self.local_cache_file_path(task)
         prefix = "embulk-input-mixpanel-"
-        key = Digest::SHA256.hexdigest(task.map{|key,val| "#{key}=#{val}"}.sort.join)
-        path = "#{Dir.tmpdir}/#{prefix}#{key}"
+        path = "#{Dir.tmpdir}/#{prefix}#{task['digest']}"
         path
       end
 
@@ -112,12 +134,12 @@ module Embulk
         end
 
         @@logger.info "end export to #{path}"
+      rescue
+        File.delete(path) if File.exists?(path)
       end
 
       def self.export(task, path, &block)
-        unless File.exists? path
-          export_to_local_cache_file(task, path)
-        end
+        export_to_local_cache_file(task, path) unless File.exists? path
 
         @@logger.info "load from #{path}"
         File.open(path) do |f|
