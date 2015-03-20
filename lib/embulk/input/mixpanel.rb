@@ -1,5 +1,7 @@
 require "tmpdir"
 require 'date'
+require 'java'
+
 require_relative "mixpanel/exporter"
 
 module Embulk
@@ -9,6 +11,7 @@ module Embulk
       Plugin.register_input("mixpanel", self)
 
       SPECIAL_PREFIX = "$"
+      @@logger = org.embulk.spi.Exec.getLogger("org.embulk.input.MixpanelInputPlugin")
 
       def self.transaction(config, &control)
         task = create_task(config)
@@ -91,11 +94,12 @@ module Embulk
         prefix = "embulk-input-mixpanel-"
         key = Digest::SHA256.hexdigest(task.map{|key,val| "#{key}=#{val}"}.sort.join)
         path = "#{Dir.tmpdir}/#{prefix}#{key}"
-        puts "local_cache_file_path: #{path}"
         path
       end
 
       def self.export_to_local_cache_file(task, path)
+        @@logger.info "start export to #{path}"
+
         exporter = Mixpanel::Exporter.new(task["mixpanel_api_key"], task["mixpanel_api_secret"])
         response = exporter.export(from_date: task["from_date"], to_date: task["to_date"], event: [task["event"]])       
           
@@ -106,6 +110,8 @@ module Embulk
             f.puts JSON.generate(props)
           end
         end
+
+        @@logger.info "end export to #{path}"
       end
 
       def self.export(task, path, &block)
@@ -113,6 +119,7 @@ module Embulk
           export_to_local_cache_file(task, path)
         end
 
+        @@logger.info "load from #{path}"
         File.open(path) do |f|
           f.each do |line|
             yield JSON.parse(line)
