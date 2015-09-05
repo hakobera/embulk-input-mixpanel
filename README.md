@@ -1,3 +1,5 @@
+**This plugin is no longer maintained. Use https://github.com/treasure-data/embulk-input-mixpanel instead.**
+
 # Mixpanel input plugin for Embulk
 
 This plugin load data from [Mixpanel raw data export API](https://mixpanel.com/docs/api-documentation/exporting-raw-data-you-inserted-into-mixpanel).
